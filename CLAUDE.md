@@ -4,7 +4,7 @@
 
 The backend for $MSV ("Maximising Shareholder Value" — a joke name for a
 genuinely useful stock/ETF/crypto research dashboard). A single Cloudflare
-Worker (`worker.js`) that proxies four free-tier financial data APIs so
+Worker (`worker.js`) that proxies free-tier financial/macro data APIs so
 their real keys never reach the browser. No frontend code lives here —
 that's [msv-web](https://github.com/Maximising-Shareholder-Value/msv-web),
 a separate repo/deployment.
@@ -54,6 +54,27 @@ two *independently deployable* pieces, not just two folders, so:
   for the other three, `false` for CoinGecko specifically — don't remove
   that, or an unconfigured `COINGECKO_API_KEY` will 500 instead of
   falling back to the public tier.
+- **Alpaca market data** (added 2026-09-21) — options chains/snapshots,
+  the one asset class this app had zero data for (Finnhub's free tier
+  has none: confirmed live against `/etf/*` — all premium-gated — and
+  `/stock/metric`, which has no options fields at all). Uses **paper
+  trading** credentials (`ALPACA_API_KEY_ID`/`ALPACA_API_SECRET_KEY`),
+  which also work against the market-data API. Authenticates via two
+  HTTP **headers** (`Apca-Api-Key-Id`/`Apca-Api-Secret-Key`), not a
+  query-string key like the other four — that's why it has its own
+  `proxyAlpaca()` function instead of going through `proxy()`. Free
+  tier: 1,000 calls/min on the Basic market-data plan, the most generous
+  limit of any source this app uses. Base URL is hardcoded to
+  `https://data.alpaca.markets/v1beta1` inside `proxyAlpaca()` (only one
+  base is needed, unlike `proxy()` which is shared across 4 APIs).
+- **World Bank Open Data** (added 2026-09-21) — multi-country macro
+  indicators (GDP, inflation, unemployment, 20,000+ more), for countries
+  FRED doesn't cover (FRED is US-only by definition). Needs **no API key
+  at all** — genuinely public, no signup — confirmed live it has **zero
+  CORS support** of its own (same situation as FRED), so it's always
+  proxied through here too. Reuses the generic `proxy()` function with
+  `keyRequired: false` and no key, same pattern as CoinGecko's optional
+  key.
 
 ## Caching
 
@@ -95,10 +116,12 @@ regardless of who's asking.
 ## Secrets
 
 `FINNHUB_API_KEY`, `TWELVE_DATA_API_KEY`, `FRED_API_KEY`,
-`COINGECKO_API_KEY` are set as Cloudflare secrets (Settings → Variables
-and secrets), read via `env` in `worker.js`. Never committed anywhere —
-there's no local `config.js` equivalent in this repo since it has no
-direct-call/local-dev mode of its own (see README's "Local development").
+`COINGECKO_API_KEY`, `ALPACA_API_KEY_ID`, and `ALPACA_API_SECRET_KEY` are
+set as Cloudflare secrets (Settings → Variables and secrets, or `wrangler
+secret put <NAME>`), read via `env` in `worker.js`. Never committed
+anywhere — there's no local `config.js` equivalent in this repo since it
+has no direct-call/local-dev mode of its own (see README's "Local
+development"). World Bank needs no secret at all.
 
 Cloudflare's "Variables cannot be added to a Worker that only has static
 assets" error (a leftover quirk from the pre-split combined project) goes
