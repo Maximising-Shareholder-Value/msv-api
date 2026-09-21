@@ -8,6 +8,9 @@ This repo is **API-only** — no HTML/CSS/JS frontend lives here. The
 frontend is [msv-web](https://github.com/Maximising-Shareholder-Value/msv-web), deployed separately (Cloudflare Pages) and pointed at
 this Worker's URL via `API_BASE_URL`.
 
+Project roadmap/history/blockers live in the org's governance hub:
+[github.com/Maximising-Shareholder-Value/.github](https://github.com/Maximising-Shareholder-Value/.github).
+
 ## What it does
 
 A single `worker.js` handles six routes:

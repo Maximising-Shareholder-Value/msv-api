@@ -9,6 +9,11 @@ their real keys never reach the browser. No frontend code lives here —
 that's [msv-web](https://github.com/Maximising-Shareholder-Value/msv-web),
 a separate repo/deployment.
 
+For the project's roadmap, history, and known blockers (spans both this
+repo and msv-web), see the org's governance hub:
+[github.com/Maximising-Shareholder-Value/.github](https://github.com/Maximising-Shareholder-Value/.github).
+This file stays the technical reference for this repo specifically.
+
 ## History: split from a combined repo (2026-09)
 
 This started as one repo/one Cloudflare Worker deployment that served
