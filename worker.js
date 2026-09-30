@@ -9,11 +9,12 @@
 // this Worker does nothing but proxy the four APIs below.
 //
 // The whole point: FINNHUB_API_KEY, TWELVE_DATA_API_KEY, FRED_API_KEY,
-// COINGECKO_API_KEY, ALPACA_API_KEY_ID, and ALPACA_API_SECRET_KEY are set
-// as secrets in the Cloudflare dashboard (Settings → Variables and
-// secrets), readable only here via `env`, never sent to the browser. The
-// page calls /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko,
-// and /api/alpaca instead of calling those APIs directly.
+// COINGECKO_API_KEY, ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY, and
+// FMP_API_KEY are set as secrets in the Cloudflare dashboard (Settings →
+// Variables and secrets), readable only here via `env`, never sent to
+// the browser. The page calls /api/finnhub, /api/twelvedata, /api/fred,
+// /api/coingecko, /api/alpaca, and /api/fmp instead of calling those
+// APIs directly.
 //
 // Caching: every response is cached at Cloudflare's edge (`caches.default`)
 // with a per-path TTL (see cacheTTL()), refreshed on demand — the first
@@ -71,8 +72,21 @@ export default {
       // still used for the US-only Macro tab, has no other-country data).
       return proxy(url, "https://api.worldbank.org/v2", null, null, null, ctx, false);
     }
+    if (url.pathname === "/api/fmp") {
+      // Financial Modeling Prep, added 2026-09-30 — a real live source
+      // for ETF fund name/description/logo/website/ISIN/CUSIP/beta for
+      // ANY ticker, confirmed via a live request (/stable/profile). NOT a
+      // source for NAV/AUM/expense-ratio/holdings/sector-weighting —
+      // those endpoints are confirmed still paywalled on this same free
+      // key (see msv-org-github BLOCKERS.md), and the "coming soon"
+      // status for that specific data doesn't change. Query-string key
+      // like Finnhub/Twelve Data/FRED, so this reuses proxy() directly.
+      // 250 requests/day free tier — the tightest budget of anything this
+      // Worker proxies, hence the long cache TTL below.
+      return proxy(url, "https://financialmodelingprep.com/stable", "apikey", env.FMP_API_KEY, "FMP_API_KEY", ctx);
+    }
 
-    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, and /api/worldbank — the frontend lives in the msv-web repo." }, 404);
+    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/worldbank, and /api/fmp — the frontend lives in the msv-web repo." }, 404);
   },
 };
 
@@ -97,6 +111,13 @@ function cacheTTL(path) {
     path === "/search" ||
     path === "/series/observations" // FRED — monthly/quarterly data, safe to cache for hours
   ) return 3600;
+  // FMP's free tier is 250 requests/day — the tightest budget this Worker
+  // proxies (Finnhub alone is 60/min, ~86,400/day). Fund profile data
+  // (name, description, ISIN, beta) barely changes day to day, so cache
+  // it hard: 24h means the whole ~70-ticker screener universe or ETF
+  // browse list only costs real FMP requests once a day per edge
+  // location, not once per page view.
+  if (path === "/profile") return 86400;
   return 120;
 }
 
