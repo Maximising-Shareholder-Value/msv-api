@@ -9,12 +9,12 @@
 // this Worker does nothing but proxy the four APIs below.
 //
 // The whole point: FINNHUB_API_KEY, TWELVE_DATA_API_KEY, FRED_API_KEY,
-// COINGECKO_API_KEY, ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY, and
-// FMP_API_KEY are set as secrets in the Cloudflare dashboard (Settings →
+// COINGECKO_API_KEY, ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY, FMP_API_KEY,
+// and BARGO_API_KEY are set as secrets in the Cloudflare dashboard (Settings →
 // Variables and secrets), readable only here via `env`, never sent to
 // the browser. The page calls /api/finnhub, /api/twelvedata, /api/fred,
-// /api/coingecko, /api/alpaca, and /api/fmp instead of calling those
-// APIs directly.
+// /api/coingecko, /api/alpaca, /api/fmp, and /api/bargo instead of calling
+// those APIs directly.
 //
 // Caching: every response is cached at Cloudflare's edge (`caches.default`)
 // with a per-path TTL (see cacheTTL()), refreshed on demand — the first
@@ -72,6 +72,19 @@ export default {
       // still used for the US-only Macro tab, has no other-country data).
       return proxy(url, "https://api.worldbank.org/v2", null, null, null, ctx, false);
     }
+    if (url.pathname === "/api/bargo") {
+      // Bargo's Congress Trades API (congressional stock trades, STOCK Act disclosures),
+      // added 2026-10-08. The msv-web frontend used to call this directly from the browser —
+      // fine on the free, keyless tier (no secret involved), but Jozsua got a free API key to
+      // raise the limit, and a key can't go in client-side code: anyone could read it out of
+      // the page's own JS bundle. Proxied here instead, same shape as every other keyed
+      // source. Bonus, not just safety: this Worker's edge cache (see cacheTTL() below) means
+      // many real visitors share one cached response instead of each spending their own
+      // request against Bargo's daily budget — the free keyless tier before this (30
+      // requests/day, 100 rows/day, shared per visitor IP) is what the research/testing pass
+      // for this feature ran into; caching here helps regardless of which tier is active.
+      return proxy(url, "https://www.bargo.ai/free-apis/congress/v1", "token", env.BARGO_API_KEY, "BARGO_API_KEY", ctx, false);
+    }
     if (url.pathname === "/api/fmp") {
       // Financial Modeling Prep, added 2026-09-30 — a real live source
       // for ETF fund name/description/logo/website/ISIN/CUSIP/beta for
@@ -86,7 +99,7 @@ export default {
       return proxy(url, "https://financialmodelingprep.com/stable", "apikey", env.FMP_API_KEY, "FMP_API_KEY", ctx);
     }
 
-    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/worldbank, and /api/fmp — the frontend lives in the msv-web repo." }, 404);
+    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/worldbank, /api/fmp, and /api/bargo — the frontend lives in the msv-web repo." }, 404);
   },
 };
 
@@ -118,6 +131,13 @@ function cacheTTL(path) {
   // browse list only costs real FMP requests once a day per edge
   // location, not once per page view.
   if (path === "/profile") return 86400;
+  // Bargo congress-trades paths (added 2026-10-08): disclosures are never same-day (the
+  // STOCK Act gives members up to ~45 days to report), so none of this needs to be fresher
+  // than a few minutes — caching it hard is what turns many real visitors' page loads into
+  // one real Bargo request per edge location instead of one each, which matters more here
+  // than for most sources given the free tier's daily request/row budget.
+  if (path === "/stats" || path === "/members") return 600;
+  if (path === "/trades" || path.startsWith("/members/")) return 300;
   return 120;
 }
 
