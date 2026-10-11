@@ -13,8 +13,11 @@
 // and BARGO_API_KEY are set as secrets in the Cloudflare dashboard (Settings →
 // Variables and secrets), readable only here via `env`, never sent to
 // the browser. The page calls /api/finnhub, /api/twelvedata, /api/fred,
-// /api/coingecko, /api/alpaca, /api/fmp, and /api/bargo instead of calling
-// those APIs directly.
+// /api/coingecko, /api/alpaca, /api/fmp, /api/bargo, and /api/sec-archive
+// instead of calling those APIs directly. SEC_USER_AGENT (wrangler.jsonc's
+// `vars`, not a secret — it's not sensitive) is the one exception: it's
+// contact info SEC's fair-access policy requires on every Archives request,
+// not an API key.
 //
 // Caching: every response is cached at Cloudflare's edge (`caches.default`)
 // with a per-path TTL (see cacheTTL()), refreshed on demand — the first
@@ -85,6 +88,19 @@ export default {
       // for this feature ran into; caching here helps regardless of which tier is active.
       return proxy(url, "https://www.bargo.ai/free-apis/congress/v1", "token", env.BARGO_API_KEY, "BARGO_API_KEY", ctx, false);
     }
+    if (url.pathname === "/api/sec-archive") {
+      // SEC EDGAR Archives (added 2026-10-11, for Form 4 tech-leader insider-trade tracking) —
+      // the actual filing document (the Form 4 ownership XML) lives under
+      // www.sec.gov/Archives/edgar/data/..., a different host from data.sec.gov/submissions/...
+      // (which has real CORS support and is called directly from the browser, no proxy needed —
+      // see msv-web's lib/secForm4.ts). This Archives host has none (SEC's Akamai bot
+      // protection, confirmed live during the 2026-10-08 research pass), so it needs this
+      // proxy. SEC's fair-access policy also requires a descriptive User-Agent with contact
+      // info on every request; since this file is in a public repo, that string lives in the
+      // SEC_USER_AGENT var (wrangler.jsonc, not a secret — it's not sensitive) rather than
+      // hardcoded here.
+      return proxySec(url, env, ctx);
+    }
     if (url.pathname === "/api/fmp") {
       // Financial Modeling Prep, added 2026-09-30 — a real live source
       // for ETF fund name/description/logo/website/ISIN/CUSIP/beta for
@@ -99,7 +115,7 @@ export default {
       return proxy(url, "https://financialmodelingprep.com/stable", "apikey", env.FMP_API_KEY, "FMP_API_KEY", ctx);
     }
 
-    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/worldbank, /api/fmp, and /api/bargo — the frontend lives in the msv-web repo." }, 404);
+    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/worldbank, /api/fmp, /api/bargo, and /api/sec-archive — the frontend lives in the msv-web repo." }, 404);
   },
 };
 
@@ -218,6 +234,43 @@ async function proxyAlpaca(url, env, ctx) {
       headers: {
         "content-type": "application/json",
         "cache-control": res.ok ? `public, max-age=${cacheTTL(path)}` : "no-store",
+      },
+    });
+    if (res.ok) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    return withCors(response);
+  } catch {
+    return jsonResponse({ error: "Upstream request failed" }, 502);
+  }
+}
+
+// SEC Archives (Form 4 ownership XML). Unlike the other sources, a filing's document never
+// changes once filed — safe to cache far longer than anything else this Worker proxies.
+// `path` is restricted to the real accession-folder shape (`/<cik>/<accession>/<file>`) so
+// this can't be used as an open proxy to arbitrary sec.gov paths.
+const SEC_PATH_RE = /^\/\d{1,10}\/\d{10,}\/[\w.-]+$/;
+
+async function proxySec(url, env, ctx) {
+  const path = url.searchParams.get("path");
+  if (!path || !SEC_PATH_RE.test(path)) {
+    return jsonResponse({ error: "Missing or invalid 'path' parameter (expected /<cik>/<accession>/<file>)" }, 400);
+  }
+  const targetUrl = `https://www.sec.gov/Archives/edgar/data${path}`;
+
+  const cache = caches.default;
+  const cacheKey = new Request(targetUrl);
+  const cached = await cache.match(cacheKey);
+  if (cached) return withCors(cached);
+
+  try {
+    const res = await fetch(targetUrl, {
+      headers: { "User-Agent": env.SEC_USER_AGENT || "MSV-App https://msv-web.jozsua-heng.workers.dev" },
+    });
+    const body = await res.text();
+    const response = new Response(body, {
+      status: res.status,
+      headers: {
+        "content-type": "application/xml",
+        "cache-control": res.ok ? "public, max-age=86400" : "no-store",
       },
     });
     if (res.ok) ctx.waitUntil(cache.put(cacheKey, response.clone()));

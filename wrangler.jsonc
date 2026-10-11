@@ -2,5 +2,10 @@
   "name": "msv-api",
   "main": "worker.js",
   "compatibility_date": "2026-07-31",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+  // Not a secret — just contact info SEC's fair-access policy requires on every
+  // Archives request (see worker.js's proxySec()). Safe to commit.
+  "vars": {
+    "SEC_USER_AGENT": "MSV-App https://msv-web.jozsua-heng.workers.dev"
+  }
 }
