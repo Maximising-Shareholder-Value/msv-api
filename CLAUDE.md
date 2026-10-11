@@ -72,6 +72,20 @@ two *independently deployable* pieces, not just two folders, so:
   limit of any source this app uses. Base URL is hardcoded to
   `https://data.alpaca.markets/v1beta1` inside `proxyAlpaca()` (only one
   base is needed, unlike `proxy()` which is shared across 4 APIs).
+- **SEC EDGAR Archives** (added 2026-10-11, `/api/sec-archive`) — the Form 4 (insider-trade)
+  ownership XML, for the Trading Insider page's "Company Insiders" tab (`msv-web`'s
+  `lib/secForm4.ts`). This is only HALF of the SEC data this feature uses: the filings-LIST
+  endpoint (`data.sec.gov/submissions/CIK##########.json`) has real CORS support and is called
+  directly from the browser, no proxy. The actual transaction document lives under
+  `www.sec.gov/Archives/edgar/data/...`, a different host with none (SEC's Akamai bot
+  protection) — that's what this route proxies. Cached far longer than anything else here (24h,
+  see `cacheTTL()`... actually hardcoded 86400s directly in `proxySec()`, not `cacheTTL()` —
+  simpler than adding a path case since there's only one path shape here) since a filing's XML
+  never changes once filed. `path` is restricted by `SEC_PATH_RE` to the real
+  `/<cik>/<accession>/<file>` shape, so this can't become an open proxy to arbitrary sec.gov
+  paths. Requires a descriptive `User-Agent` per SEC's fair-access policy — `SEC_USER_AGENT`,
+  set in `wrangler.jsonc`'s `vars` (a plain, committed value, NOT a Cloudflare secret — it's
+  contact info, not sensitive; see "Secrets" below for why this one's different).
 - **World Bank Open Data** (added 2026-09-21) — multi-country macro
   indicators (GDP, inflation, unemployment, 20,000+ more), for countries
   FRED doesn't cover (FRED is US-only by definition). Needs **no API key
@@ -121,12 +135,22 @@ regardless of who's asking.
 ## Secrets
 
 `FINNHUB_API_KEY`, `TWELVE_DATA_API_KEY`, `FRED_API_KEY`,
-`COINGECKO_API_KEY`, `ALPACA_API_KEY_ID`, and `ALPACA_API_SECRET_KEY` are
-set as Cloudflare secrets (Settings → Variables and secrets, or `wrangler
-secret put <NAME>`), read via `env` in `worker.js`. Never committed
-anywhere — there's no local `config.js` equivalent in this repo since it
-has no direct-call/local-dev mode of its own (see README's "Local
+`COINGECKO_API_KEY`, `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`,
+`FMP_API_KEY`, and `BARGO_API_KEY` are set as Cloudflare secrets
+(Settings → Variables and secrets, or `wrangler secret put <NAME>`),
+read via `env` in `worker.js`. Never committed anywhere — there's no
+local `config.js` equivalent in this repo since it has no
+direct-call/local-dev mode of its own (see README's "Local
 development"). World Bank needs no secret at all.
+
+`SEC_USER_AGENT` is deliberately **not** a secret, even though it's set
+the same way the secrets are read (`env.SEC_USER_AGENT`) — it's a
+Cloudflare `vars` entry in `wrangler.jsonc` instead, committed in plain
+text. It holds contact info SEC's fair-access policy requires on every
+Archives request, not an API key; nothing bad happens if it's public,
+and keeping it in `wrangler.jsonc` (versus the dashboard) means it's
+visible/editable without a Cloudflare login. Don't "upgrade" it to a
+secret later without a reason — that would just make it harder to see.
 
 Cloudflare's "Variables cannot be added to a Worker that only has static
 assets" error (a leftover quirk from the pre-split combined project) goes
