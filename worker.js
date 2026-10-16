@@ -10,14 +10,14 @@
 //
 // The whole point: FINNHUB_API_KEY, TWELVE_DATA_API_KEY, FRED_API_KEY,
 // COINGECKO_API_KEY, ALPACA_API_KEY_ID, ALPACA_API_SECRET_KEY, FMP_API_KEY,
-// and BARGO_API_KEY are set as secrets in the Cloudflare dashboard (Settings →
-// Variables and secrets), readable only here via `env`, never sent to
-// the browser. The page calls /api/finnhub, /api/twelvedata, /api/fred,
-// /api/coingecko, /api/alpaca, /api/fmp, /api/bargo, and /api/sec-archive
-// instead of calling those APIs directly. SEC_USER_AGENT (wrangler.jsonc's
-// `vars`, not a secret — it's not sensitive) is the one exception: it's
-// contact info SEC's fair-access policy requires on every Archives request,
-// not an API key.
+// BARGO_API_KEY, and (optional) OPENFIGI_API_KEY are set as secrets in the
+// Cloudflare dashboard (Settings → Variables and secrets), readable only
+// here via `env`, never sent to the browser. The page calls /api/finnhub,
+// /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/fmp,
+// /api/bargo, /api/sec-archive, and /api/openfigi instead of calling those
+// APIs directly. SEC_USER_AGENT (wrangler.jsonc's `vars`, not a secret —
+// it's not sensitive) is the one exception: it's contact info SEC's
+// fair-access policy requires on every Archives request, not an API key.
 //
 // Caching: every response is cached at Cloudflare's edge (`caches.default`)
 // with a per-path TTL (see cacheTTL()), refreshed on demand — the first
@@ -114,8 +114,22 @@ export default {
       // Worker proxies, hence the long cache TTL below.
       return proxy(url, "https://financialmodelingprep.com/stable", "apikey", env.FMP_API_KEY, "FMP_API_KEY", ctx);
     }
+    if (url.pathname === "/api/openfigi") {
+      // OpenFIGI (added 2026-10-16, for Tier 3 of Trading Insider: 13F institutional holdings
+      // — Buffett, Burry, Ackman, Wood). A 13F filing identifies each holding by CUSIP, not
+      // ticker, so this maps CUSIP -> real ticker/company name. Confirmed live: no CORS support
+      // of its own, so needs a proxy like FRED/World Bank/SEC Archives above. POST with a JSON
+      // body (a list of CUSIPs), unlike every other source here, which is why it gets its own
+      // function instead of proxy()'s query-string-key shape. Real limit found by testing
+      // directly (not assumed from docs): the unauthenticated tier caps a request at 10 mapping
+      // jobs, HTTP 413 above that — msv-web's caller batches accordingly. Rate limit: 25
+      // requests/min, confirmed via the response's own ratelimit-* headers. No key required for
+      // the free tier; OPENFIGI_API_KEY is optional (raises the limit) same pattern as
+      // CoinGecko's optional key.
+      return proxyOpenFigi(request, env, ctx);
+    }
 
-    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/worldbank, /api/fmp, /api/bargo, and /api/sec-archive — the frontend lives in the msv-web repo." }, 404);
+    return jsonResponse({ error: "Not found. This Worker only serves /api/finnhub, /api/twelvedata, /api/fred, /api/coingecko, /api/alpaca, /api/worldbank, /api/fmp, /api/bargo, /api/sec-archive, and /api/openfigi — the frontend lives in the msv-web repo." }, 404);
   },
 };
 
@@ -270,6 +284,60 @@ async function proxySec(url, env, ctx) {
       status: res.status,
       headers: {
         "content-type": "application/xml",
+        "cache-control": res.ok ? "public, max-age=86400" : "no-store",
+      },
+    });
+    if (res.ok) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    return withCors(response);
+  } catch {
+    return jsonResponse({ error: "Upstream request failed" }, 502);
+  }
+}
+
+// CUSIP format: 8 alphanumeric chars + 1 check digit. Restricts the body to real-looking IDs
+// before they're forwarded anywhere, same spirit as SEC_PATH_RE above.
+const CUSIP_RE = /^[0-9A-Z]{9}$/;
+
+async function proxyOpenFigi(request, env, ctx) {
+  if (request.method !== "POST") {
+    return jsonResponse({ error: "POST only, with a JSON body { cusips: [...] }" }, 405);
+  }
+  let cusips;
+  try {
+    ({ cusips } = await request.json());
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body, expected { cusips: [...] }" }, 400);
+  }
+  if (!Array.isArray(cusips) || cusips.length === 0 || cusips.length > 10) {
+    return jsonResponse({ error: "cusips must be a non-empty array of at most 10 (OpenFIGI's own per-request cap on the free tier)" }, 400);
+  }
+  if (!cusips.every((c) => typeof c === "string" && CUSIP_RE.test(c))) {
+    return jsonResponse({ error: "Every entry in cusips must be a 9-character CUSIP" }, 400);
+  }
+
+  // Cache key is the sorted CUSIP list, not the raw request — a filing's CUSIPs never change
+  // once filed, same reasoning as SEC Archives' 24h cache above, and sorting means the same
+  // set of CUSIPs in a different order still hits the same cache entry.
+  const cacheKeyUrl = `https://api.openfigi.com/v3/mapping#${[...cusips].sort().join(",")}`;
+  const cache = caches.default;
+  const cacheKey = new Request(cacheKeyUrl);
+  const cached = await cache.match(cacheKey);
+  if (cached) return withCors(cached);
+
+  const headers = { "Content-Type": "application/json" };
+  if (env.OPENFIGI_API_KEY) headers["X-OPENFIGI-APIKEY"] = env.OPENFIGI_API_KEY;
+
+  try {
+    const res = await fetch("https://api.openfigi.com/v3/mapping", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(cusips.map((idValue) => ({ idType: "ID_CUSIP", idValue }))),
+    });
+    const body = await res.text();
+    const response = new Response(body, {
+      status: res.status,
+      headers: {
+        "content-type": "application/json",
         "cache-control": res.ok ? "public, max-age=86400" : "no-store",
       },
     });

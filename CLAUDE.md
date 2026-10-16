@@ -86,6 +86,20 @@ two *independently deployable* pieces, not just two folders, so:
   paths. Requires a descriptive `User-Agent` per SEC's fair-access policy — `SEC_USER_AGENT`,
   set in `wrangler.jsonc`'s `vars` (a plain, committed value, NOT a Cloudflare secret — it's
   contact info, not sensitive; see "Secrets" below for why this one's different).
+- **OpenFIGI** (added 2026-10-16, `/api/openfigi`) — CUSIP-to-ticker mapping, for Trading
+  Insider's Tier 3 ("Holdings" tab, 13F institutional holdings — Buffett, Burry, Ackman, Wood).
+  A 13F identifies each position by CUSIP, not ticker, and OpenFIGI (Bloomberg's free mapping
+  service) is the only confirmed-free, no-signup way to resolve that (see msv-org-github's
+  API_RESEARCH.md). Confirmed live it has no CORS support of its own, so it needs this proxy like
+  FRED/World Bank/SEC Archives above — but unlike every other source here it's a **POST with a
+  JSON body** (a list of CUSIPs), which is why it has its own `proxyOpenFigi()` function instead
+  of `proxy()`'s query-string-key shape. Real limit found by testing directly (not assumed from
+  docs): the unauthenticated free tier caps a single request at **10 mapping jobs** (HTTP 413
+  above that — several guides cite a higher "100" figure, which is a registered-key number, not
+  the keyless default), and 25 requests/minute. `msv-web`'s caller (`lib/sec13F.ts`) batches
+  CUSIPs into groups of 10 accordingly. `OPENFIGI_API_KEY` is optional (raises the limit), same
+  pattern as CoinGecko's optional key — not set as of this writing. Cached 24h, same reasoning as
+  SEC Archives: a CUSIP's real-world ticker essentially never changes.
 - **World Bank Open Data** (added 2026-09-21) — multi-country macro
   indicators (GDP, inflation, unemployment, 20,000+ more), for countries
   FRED doesn't cover (FRED is US-only by definition). Needs **no API key
@@ -141,7 +155,10 @@ regardless of who's asking.
 read via `env` in `worker.js`. Never committed anywhere — there's no
 local `config.js` equivalent in this repo since it has no
 direct-call/local-dev mode of its own (see README's "Local
-development"). World Bank needs no secret at all.
+development"). World Bank needs no secret at all. `OPENFIGI_API_KEY` is
+optional (raises OpenFIGI's rate limit above the keyless default) and
+not currently set — `proxyOpenFigi()` works without it, just at the
+lower unauthenticated limit.
 
 `SEC_USER_AGENT` is deliberately **not** a secret, even though it's set
 the same way the secrets are read (`env.SEC_USER_AGENT`) — it's a
